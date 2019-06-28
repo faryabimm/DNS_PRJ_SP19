@@ -69,7 +69,41 @@ def decrypt_sym(enc_message, key):
     return fernet.decrypt(enc_message)
 
 
-def encrypt_asym(message_bytes, sender_prk_bytes, receiver_puk_bytes):
+def encrypt_asym(message_bytes, puk_bytes):
+    key = __loads_puk(puk_bytes)
+
+    cipher_text_hex = key.encrypt(
+        message_bytes,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA1()),
+            algorithm=hashes.SHA1(),
+            label=None
+        )
+    )
+
+    cipher_text = base64.encodebytes(cipher_text_hex)
+
+    return cipher_text
+
+
+def decrypt_asym(cypher_text_bytes, prk_bytes):
+    key = __loads_prk(prk_bytes)
+
+    cypher_text_hex = base64.decodebytes(cypher_text_bytes)
+
+    message_bytes = key.decrypt(
+        cypher_text_hex,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA1()),
+            algorithm=hashes.SHA1(),
+            label=None
+        )
+    )
+
+    return message_bytes
+
+
+def encrypt_asym_with_signature(message_bytes, sender_prk_bytes, receiver_puk_bytes):
     sender_prk = __loads_prk(sender_prk_bytes)
     receiver_puk = __loads_puk(receiver_puk_bytes)
 
@@ -114,7 +148,7 @@ def __verify_signature(sender_puk, signature_hex, message_bytes):
         return False
 
 
-def decrypt_asym(cypher_text_bytes, signature_bytes, receiver_prk_bytes, sender_puk_bytes):
+def decrypt_asym_with_signature(cypher_text_bytes, signature_bytes, receiver_prk_bytes, sender_puk_bytes):
     signature_hex = base64.decodebytes(signature_bytes)
     cypher_text_hex = base64.decodebytes(cypher_text_bytes)
 
