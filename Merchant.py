@@ -54,7 +54,7 @@ class Merchant:
             def c2m():
                 ## TODO: receive message
                 message = b""
-                message = crypto.decrypt_asym_with_signature(message, self.PK[0], self.pgs_puk)
+                message, valid = crypto.decrypt_asym_with_signature(message, self.PK[0], self.pgs_puk)
                 message = message.split(b"$")
                 ps = message[0]
                 if self.id != message[1]:

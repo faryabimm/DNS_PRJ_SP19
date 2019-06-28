@@ -45,7 +45,7 @@ class Customer:
             def recive_auth2m():
                 ## TODO: receive
                 message = "" ##TODO
-                message = crypto.decrypt_sym(message, K)
+                message, valid = crypto.decrypt_sym(message, K)
                 message = message.split(b"$")
                 T_CM = message[0]
                 CM = message[1]
@@ -64,7 +64,7 @@ class Customer:
             def p2c():
                 ##TODO: receive message
                 message = b"" ##TODO
-                message = crypto.decrypt_sym(message, K1)
+                message, valid = crypto.decrypt_sym(message, K1)
                 message = message.split(b"$")
                 K2 = message[0]
                 ps = message[1] ##TODO: send this!
