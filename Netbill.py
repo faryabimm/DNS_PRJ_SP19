@@ -1,49 +1,42 @@
 import utils.cryptography as crypto
 from Principal import *
+from Customer import Customer
 
 
 
 class Netbill:
     def __init__(self):
-        self.principals = dict()
+        self.merchants = dict()
+        self.customers = dict()
         self.PUK = dict()
         self.PGS = PGS()
 
-    def add_principal(self, principal_id, principal_password):
-        principal_key = crypto.generate_private_public_key_pair()
-        new_principal = Principal(principal_id, principal_password, principal_key)
-        self.principals[(principal_id, principal_password)] = new_principal
+    def add_customer(self, id, password):
+        ##TODO: recive request
+        keys = crypto.generate_private_public_key_pair()
+        new_customer = Customer(id, password, keys)
+        self.customers[(id, password)] = new_customer
+
+    def add_merchant(self, id):
+        ##TODO recieve request
+        keys = crypto.generate_private_public_key_pair()
+        new_merchant = Principal(id, keys)
+        self.merchants[id] = new_merchant
 
     # def updated_PUK(self):
     #     new_PUK = map(lambda key: d[key], d.keys())
     #     list(map(lambda x: x * 2, li))
     #     self.principals
     def begin_transaction(self, customer_id, customer_password, merchant_id, hidden):
-        def share_PUK(self, A, B):
+        def share_PUK(self, customer, merchant):
             ## TODO: commute public key
             pass
 
         if not hidden:
-            share_PUK(self.principals[(customer_id.customer_password)],
-                      self.principals[(merchant_id, "")])
-
-            K = crypto.generate_symmetric_key()
-            c2m = [customer_id, merchant_id, dt.now().timestamp(), K]
-            = crypto.encrypt_asym('$'.join(c2m))
-
-
-    # def get_key(self, customer_id):
-    #     return self.customers[customer_id]
-
+            customer = self.customers[(customer_id, customer_password)]
+            merchant = self.merchants[merchant_id]
+            share_PUK(customer, merchant)
 
 #
-# class TGS:
-#     def __init__(self, principals, servers):
-
-
-#
-# class TGS_NM:
+# class PGS:
 #     def __init__(self):
-
-class PGS:
-    def __init__(self):
