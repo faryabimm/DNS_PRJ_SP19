@@ -9,7 +9,7 @@ class Netbill:
         self.merchants = dict()
         self.customers = dict()
         self.PUK = dict()
-        self.PGS = PGS()
+        # self.PGS = PGS()
 
     def add_customer(self, id, password):
         ##TODO: recive request
