@@ -31,7 +31,7 @@ def generate_private_public_key_pair():
     pass
 
 
-def encrypt(message, key):
+def encrypt_sym(message, key):
     """
     :param message: bytes array
     :param key: key object
@@ -39,11 +39,27 @@ def encrypt(message, key):
     """
     pass
 
+def encrypt_asym(message, key):
+    """
+    :param message: bytes array
+    :param key: key object
+    :return enc_message: bytes array
+    """
+    pass
 
-def decrypt(enc_message, key):
+def decrypt_asym(enc_message, key):
     """
     :param enc_message: bytes array
     :param key: key object
     :return message: bytes array
     """
     pass
+
+def decrypt_sym(enc_message, key):
+    """
+    :param enc_message: bytes array
+    :param key: key object
+    :return message: bytes array
+    """
+    pass
+
