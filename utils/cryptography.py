@@ -1,5 +1,8 @@
 import base64
 import hashlib
+import random
+import string
+from datetime import datetime
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.fernet import Fernet
@@ -7,14 +10,85 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 
+import configuration as config
+from configuration import MESSAGE_SEPARATOR as SEP
+from utils import logger
+
 hash_algorithm = hashlib.sha1
 
 
-def cryptographic_checksum(byte_message):
+def cryptographic_checksum(message_bytes):
     """
     :return checksum: bytes array
     """
-    return hash_(byte_message)
+    return hash_(message_bytes)
+
+
+def get_timestamp():
+    return bytes(str(int(datetime.now().timestamp() * 1e6)), encoding='utf-8')
+
+
+def get_ticket_life_span():
+    return get_timestamp(), bytes(str(int((datetime.now().timestamp() + config.TICKET_LIFE_TIME_MINUTES * 60) * 1e6)),
+                                  encoding='utf-8')
+
+
+def clear_sign(message_bytes, private_key_bytes):
+    nonce = generate_nonce()
+    timestamp = get_timestamp()
+    final_message_bytes = SEP.join([message_bytes, nonce, timestamp])
+    signature = sign_message(final_message_bytes, private_key_bytes)
+
+    return SEP.join([final_message_bytes, signature])
+
+
+def strip_clear_signed_message(clear_signed_message_bytes):
+    parts = clear_signed_message_bytes.split(SEP)
+    return SEP.join(parts[:-3])
+
+
+def verify_clear_signature(clear_signed_message_bytes, public_key_bytes):
+    parts = clear_signed_message_bytes.split(SEP)
+    message_bytes = SEP.join(parts[:-3])
+    nonce = parts[-3]
+    timestamp = parts[-2]
+    signature = parts[-1]
+    verified = verify_signature(public_key_bytes, signature, SEP.join([message_bytes, nonce, timestamp]))
+    if not verified:
+        logger.log_warn('clear signature verification failed.')
+
+        # TODO timestamp checking!
+
+    return message_bytes, verified
+
+
+def generate_random_identity():
+    return generate_random_bytes(config.IDENTIFIER_LENGTH)
+
+
+def generate_random_bytes(length):
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length)).encode('utf-8')
+
+
+def generate_nonce():
+    return generate_random_bytes(length=config.NONCE_LENGTH)
+
+
+def two_layer_sym_asym_encode(message_bytes, public_key_bytes):
+    nonce = generate_nonce()
+    symmetric_key = generate_symmetric_key()
+    encrypted_message = encrypt_sym(message_bytes=SEP.join([message_bytes, nonce]), key_bytes=symmetric_key)
+    encrypted_key = encrypt_asym(message_bytes=symmetric_key, puk_bytes=public_key_bytes)
+
+    return SEP.join([encrypted_message, encrypted_key])
+
+
+def two_layer_sym_asym_decode(message_bytes, private_key_bytes):
+    enc_message_bytes, enc_key_bytes = message_bytes.split(SEP)
+    symmetric_key = decrypt_asym(enc_key_bytes, private_key_bytes)
+    plain_bytes = decrypt_sym(enc_message_bytes, symmetric_key)
+    plain_message = SEP.join(plain_bytes.split(SEP)[:-1])
+    return plain_message
 
 
 def hash_(byte_message):
@@ -49,24 +123,24 @@ def generate_private_public_key_pair():
     return private_key_bytes, public_key_bytes
 
 
-def encrypt_sym(message, key):
+def encrypt_sym(message_bytes, key_bytes):
     """
-    :param message: bytes array
-    :param key: key object
+    :param message_bytes: bytes array
+    :param key_bytes: key_bytes object
     :return enc_message: bytes array
     """
-    fernet = Fernet(key)
-    return fernet.encrypt(message)
+    fernet = Fernet(key_bytes)
+    return fernet.encrypt(message_bytes)
 
 
-def decrypt_sym(enc_message, key):
+def decrypt_sym(enc_message_bytes, key_bytes):
     """
-    :param enc_message: bytes array
-    :param key: key object
+    :param enc_message_bytes: bytes array
+    :param key_bytes: key_bytes object
     :return message: bytes array
     """
-    fernet = Fernet(key)
-    return fernet.decrypt(enc_message)
+    fernet = Fernet(key_bytes)
+    return fernet.decrypt(enc_message_bytes)
 
 
 def encrypt_asym(message_bytes, puk_bytes):
@@ -103,8 +177,24 @@ def decrypt_asym(cypher_text_bytes, prk_bytes):
     return message_bytes
 
 
+def sign_message(message_bytes, private_key_bytes):
+    private_key = __loads_prk(private_key_bytes)
+
+    signature_hex = private_key.sign(
+        message_bytes,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+
+    signature = base64.encodebytes(signature_hex)
+
+    return signature
+
+
 def encrypt_asym_with_signature(message_bytes, sender_prk_bytes, receiver_puk_bytes):
-    sender_prk = __loads_prk(sender_prk_bytes)
     receiver_puk = __loads_puk(receiver_puk_bytes)
 
     cipher_text_hex = receiver_puk.encrypt(
@@ -116,23 +206,17 @@ def encrypt_asym_with_signature(message_bytes, sender_prk_bytes, receiver_puk_by
         )
     )
 
+    signature = sign_message(message_bytes, sender_prk_bytes)
     cipher_text = base64.encodebytes(cipher_text_hex)
-
-    signature_hex = sender_prk.sign(
-        message_bytes,
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-        ),
-        hashes.SHA256()
-    )
-
-    signature = base64.encodebytes(signature_hex)
 
     return cipher_text, signature
 
 
-def __verify_signature(sender_puk, signature_hex, message_bytes):
+def verify_signature(sender_puk_bytes, signature_bytes, message_bytes):
+    sender_puk = __loads_puk(sender_puk_bytes)
+
+    signature_hex = base64.decodebytes(signature_bytes)
+
     try:
         sender_puk.verify(
             signature_hex,
@@ -149,7 +233,6 @@ def __verify_signature(sender_puk, signature_hex, message_bytes):
 
 
 def decrypt_asym_with_signature(cypher_text_bytes, signature_bytes, receiver_prk_bytes, sender_puk_bytes):
-    signature_hex = base64.decodebytes(signature_bytes)
     cypher_text_hex = base64.decodebytes(cypher_text_bytes)
 
     receiver_prk = __loads_prk(receiver_prk_bytes)
@@ -164,7 +247,7 @@ def decrypt_asym_with_signature(cypher_text_bytes, signature_bytes, receiver_prk
         )
     )
 
-    verification = __verify_signature(sender_puk, signature_hex, message_bytes)
+    verification = verify_signature(sender_puk, signature_bytes, message_bytes)
 
     return message_bytes, verification
 
