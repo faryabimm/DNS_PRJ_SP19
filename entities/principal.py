@@ -7,10 +7,11 @@ from utils import cryptography, messaging, logger
 class Principal:
     def __init__(self, identifier):
         self.identifier = identifier
-        self.private_key, self.public_key = cryptography.generate_private_public_key_pair()
+        self.private_key, self.public_key = cryptography.generate_rsa_private_public_key_pair()
         self.public_keychain = {}
         self.transaction_context = {}
-        self.transactor_id = None
+        self.account = (None, None)
+        self.transactor_dsa_public_key = None
 
     # TODO dump and load keychain methods in utils.cryptography
 
@@ -33,7 +34,11 @@ class Principal:
         if server_id not in self.public_keychain:
             contact_info = messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[server_id],
                                                                        static.GET_CONTACT_INFO)
-            server_id, server_public_key = contact_info.split(SEP)
+            if server_id == config.TRANSACTOR_ID:
+                server_id, server_public_key, server_dsa_public_key = contact_info.split(SEP)
+                self.transactor_dsa_public_key = server_dsa_public_key
+            else:
+                server_id, server_public_key = contact_info.split(SEP)
 
             self.public_keychain[server_id] = server_public_key
 

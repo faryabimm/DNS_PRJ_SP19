@@ -4,6 +4,7 @@ import configuration as config
 import static
 from configuration import MESSAGE_SEPARATOR as SEP
 from entities.psudonym_types import PsudonymTypes
+from entities.transaction_result_types import TransactionResultType
 from static import slash_contain as slash
 from utils import cryptography
 from utils import logger
@@ -19,8 +20,11 @@ class Transactor:
 
     def __init__(self):
         self.identifier = config.TRANSACTOR_ID
-        self.private_key, self.public_key = cryptography.generate_private_public_key_pair()
+        self.private_key, self.public_key = cryptography.generate_rsa_private_public_key_pair()
+        self.dsa_private_key, self.dsa_public_key = cryptography.generate_dsa_private_public_key_pair()
         self.public_keychain = {}
+        self.credit_accounts = {}
+        self.past_epoids = set()
 
 
 # ####################### ENTITY ELEMENTS  ####################### #
@@ -38,39 +42,47 @@ def run_server(address):
 # ####################### SERVICE METHODS  ####################### #
 
 
-def transaction_process():
-    pass
+def get_account_balance_bytes(identifier):
+    if identifier not in data.credit_accounts:
+        logger.log_warn('identifier `{}` not found.'.format(identifier))
+        return
+
+    balance = data.credit_accounts[identifier][1]
+
+    if balance == int(balance):
+        return bytes(str(int(balance)), encoding='utf-8') + config.CURRENCY
+    else:
+        return bytes(str(balance), encoding='utf-8') + config.CURRENCY
 
 
-def add_customer():
-    pass
+def get_account_number(identifier):
+    if identifier not in data.credit_accounts:
+        logger.log_warn('identifier `{}` not found.'.format(identifier))
+        return
+
+    return data.credit_accounts[identifier][0]
 
 
-def add_merchant():
-    pass
+def get_account_balance(identifier):
+    if identifier not in data.credit_accounts:
+        logger.log_warn('identifier `{}` not found.'.format(identifier))
+        return
+
+    return data.credit_accounts[identifier][1]
 
 
-def initialize_transaction(self, customer_id, merchant_id, use_psudonym):
-    if not use_psudonym:
-        self.share_public_keys(customer_id, merchant_id)
+def apply_credit_delta(identifier, delta):
+    if identifier not in data.credit_accounts:
+        logger.log_warn('identifier `{}` not found.'.format(identifier))
+        return
 
-
-def generate_ticket():
-    pass
-
-
-def generate_psudonym_ticket():
-    pass
-
-
-def share_public_keys(merchant_id, customer_id):
-    pass
+    data.credit_accounts[identifier] = (data.credit_accounts[identifier][0], data.credit_accounts[identifier][1] + delta)
 
 
 @app.route(slash(static.GET_CONTACT_INFO), methods=['POST'])
 def get_contact_info():
     logger.log_access(request)
-    contact_info = SEP.join([data.identifier, data.public_key])
+    contact_info = SEP.join([data.identifier, data.public_key, data.dsa_public_key])
     return contact_info, 200
 
 
@@ -137,17 +149,26 @@ def register_client():
 
     client_identifier, client_public_key, transactor_identifier = message.split(SEP)
 
+    warn_message = None
     if transactor_identifier != data.identifier:
         warn_message = 'invalid transactor identifier.'
+    elif client_identifier in data.public_keychain:
+        warn_message = 'client exists. updating.'
+
+    if warn_message is not None:
         logger.log_warn(warn_message)
         return warn_message, 403
 
-    if client_identifier in data.public_keychain:
-        logger.log_info('client exists. updating.')
-
     data.public_keychain[client_identifier] = client_public_key
 
-    return 'client registered', 200
+    account_number = cryptography.generate_random_account_number()
+    nonce = cryptography.generate_nonce()
+
+    account_receipt = SEP.join([account_number, nonce])
+    account_receipt_enc = cryptography.two_layer_sym_asym_encode(account_receipt, client_public_key)
+    data.credit_accounts[client_identifier] = ((account_number, nonce), config.INITIAL_CLIENT_CREDIT)
+
+    return account_receipt_enc, 200
 
 
 @app.route(slash(static.REGISTER_MERCHANT), methods=['POST'])
@@ -158,17 +179,183 @@ def register_merchant():
 
     merchant_identifier, merchant_public_key, transactor_identifier = message.split(SEP)
 
+    warn_message = None
     if transactor_identifier != data.identifier:
         warn_message = 'invalid transactor identifier.'
+    elif merchant_identifier in data.public_keychain:
+        warn_message = 'merchant exists. aborting.'
+
+    if warn_message is not None:
         logger.log_warn(warn_message)
         return warn_message, 403
 
-    if merchant_identifier in data.public_keychain:
-        logger.log_info('merchant exists. updating.')
-
     data.public_keychain[merchant_identifier] = merchant_public_key
 
-    return 'merchant registered', 200
+    account_number = cryptography.generate_random_account_number()
+    nonce = cryptography.generate_nonce()
+
+    account_receipt = SEP.join([account_number, nonce])
+    account_receipt_enc = cryptography.two_layer_sym_asym_encode(account_receipt, merchant_public_key)
+    data.credit_accounts[merchant_identifier] = ((account_number, nonce), config.INITIAL_MERCHANT_CREDIT)
+
+    return account_receipt_enc, 200
+
+
+@app.route(slash(static.CREATE_TICKET), methods=['POST'])
+def create_ticket():
+    logger.log_access(request)
+    message = messaging.get_request_data(request)
+    encrypted_data = cryptography.strip_clear_signed_message(message)
+    decrypted_data = cryptography.two_layer_sym_asym_decode(encrypted_data, data.private_key)
+
+    client_identity, transactor_id, timestamp, symmetric_key = decrypted_data.split(SEP)
+
+    if data.identifier != transactor_id:
+        warn_message = 'transactor id does not match.'
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    # todo check timestamp
+
+    client_access_symmetric_key = cryptography.generate_symmetric_key()
+    client_address = request.remote_addr.encode('utf-8')
+    ticket_start_timestamp, ticket_end_timestamp = cryptography.get_ticket_life_span()
+    ticket_unencrypted = SEP.join([
+        client_access_symmetric_key,
+        client_identity,
+        client_address,
+        ticket_start_timestamp,
+        ticket_end_timestamp
+    ])
+
+    ticket = cryptography.encrypt_asym(ticket_unencrypted, data.public_key)
+
+    response = cryptography.encrypt_sym(SEP.join([
+        ticket,
+        client_access_symmetric_key
+    ]), symmetric_key)
+
+    logger.log_info('generated access ticket and key for client id `{}`'.format(client_identity))
+
+    return response, 200
+
+
+@app.route(slash(static.SUBMIT_ENDORSED_SIGNED_EPO), methods=['POST'])
+def submit_signed_endorsed_epo():
+    logger.log_access(request)
+    message = messaging.get_request_data(request)
+    ticket, signed_endorsed_epo_enc = message.split(SEP)
+    merchant_sym_key, merchant_identity, _, _, _ = cryptography.open_ticket(ticket, data.private_key)
+
+    signed_endorsed_epo_clear_signed = cryptography.decrypt_sym(signed_endorsed_epo_enc, merchant_sym_key)
+
+    signed_endorsed_epo, verified = cryptography.verify_clear_signature(signed_endorsed_epo_clear_signed,
+                                                                        data.public_keychain[merchant_identity])
+
+    if not verified:
+        warn_message = 'client epo signature not verified'
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    parts = signed_endorsed_epo.split(SEP)
+    product_key = parts[-1]
+    merchant_memo = parts[-2]
+    merchant_account = parts[-3]
+    signed_epo = SEP.join(parts[:-3])
+
+    epo = cryptography.strip_clear_signed_message(signed_epo)
+
+    parts = epo.split(SEP)
+
+    client_identity = parts[0]
+    product_id = parts[1]
+    price_to_pay = parts[2]
+    epo_merchant_id = parts[3]
+    enc_product_checksum = parts[4]
+    product_request_data_checksum = parts[5]
+    account_data_checksum = parts[6]
+    epoid_plain = SEP.join(parts[7:10])
+    client_transactor_ticket = parts[10]
+    order_for_transactor = parts[11]
+
+    if client_identity not in data.public_keychain:
+        warn_message = 'unknown client `{}`'.format(client_identity)
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    _, verified = cryptography.verify_clear_signature(signed_epo, data.public_keychain[client_identity])
+
+    client_sym_key, ticket_client_identity, _, _, _ = cryptography.open_ticket(client_transactor_ticket,
+                                                                               data.private_key)
+    # todo check ticket timestamps
+
+    price_number = cryptography.get_price_number(price_to_pay)
+
+    order_for_transactor_plain = cryptography.decrypt_sym(order_for_transactor, client_sym_key)
+
+    client_authorization, client_account_number, client_account_nonce, client_memo = order_for_transactor_plain.split(
+        SEP)
+    # todo check client memo, authorization for groups
+
+    warn_message = None
+    if not verified:
+        warn_message = 'client epo signature not verified'
+    elif epo_merchant_id != merchant_identity:
+        warn_message = '`merchant_id` mismatch'
+    elif client_identity != ticket_client_identity:
+        warn_message = '`client_id` mismatch'
+    elif (client_account_number, client_account_nonce) != data.credit_accounts[client_identity][0]:
+        warn_message = 'mismatch client account data'
+    elif merchant_account != data.credit_accounts[merchant_identity][0][0]:
+        warn_message = 'mismatch client account number'
+    elif cryptography.cryptographic_checksum(SEP.join(data.credit_accounts[client_identity][0])) != account_data_checksum:
+        warn_message = 'corrupt client account checksum data'
+    elif epoid_plain in data.past_epoids:
+        warn_message = 'repetitive epo'
+    elif data.credit_accounts[client_identity][1] < price_number:
+        warn_message = 'insufficient funds'
+
+    if warn_message is not None:
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    data.past_epoids.add(epoid_plain)
+
+    apply_credit_delta(client_identity, -price_number)
+    apply_credit_delta(merchant_identity, +price_number)
+
+    # todo return proper message on transaction failure
+
+    result = TransactionResultType.SUCCESS.value
+
+    transaction_receipt_plain = SEP.join([
+        result,
+        client_identity,
+        price_to_pay,
+        product_id,
+        merchant_identity,
+        product_key,
+        epoid_plain
+    ])
+
+    transaction_receipt_dsa_signed = cryptography.dsa_sign(transaction_receipt_plain, data.dsa_private_key)
+
+    flags = b'' #todo check
+
+    client_receipt_plain = SEP.join([
+        epoid_plain,
+        client_account_number,
+        cryptography.get_price_bytes(data.credit_accounts[client_identity][1]),
+        flags
+    ])
+
+    client_receipt = cryptography.encrypt_sym(client_receipt_plain, client_sym_key)
+
+    response_plain = SEP.join([transaction_receipt_dsa_signed, client_receipt])
+    response = cryptography.encrypt_sym(response_plain, merchant_sym_key)
+
+    return response, 200
+
 
 
 if __name__ == '__main__':

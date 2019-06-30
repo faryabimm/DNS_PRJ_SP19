@@ -8,7 +8,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa, dsa, padding
 
 import configuration as config
 from configuration import MESSAGE_SEPARATOR as SEP
@@ -47,7 +47,7 @@ def strip_clear_signed_message(clear_signed_message_bytes):
     return SEP.join(parts[:-3])
 
 
-def open_merchant_ticket(ticket_bytes, merchant_private_key):
+def open_ticket(ticket_bytes, merchant_private_key):
     ticket = decrypt_asym(ticket_bytes, merchant_private_key)
     """
     client_access_symmetric_key,
@@ -86,8 +86,16 @@ def generate_random_bytes(length):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length)).encode('utf-8')
 
 
+def generate_random_number_bytes(length):
+    return ''.join(random.choices(string.digits, k=length)).encode('utf-8')
+
+
 def generate_epoid_serial_number():
-    return ''.join(random.choices(string.digits, k=config.EPOID_SERIAL_NUMBER_LENGTH)).encode('utf-8')
+    return generate_random_number_bytes(length=config.EPOID_SERIAL_NUMBER_LENGTH)
+
+
+def generate_random_account_number():
+    return generate_random_number_bytes(config.ACCOUNT_NUMBER_LENGTH)
 
 
 def generate_nonce():
@@ -125,7 +133,7 @@ def generate_symmetric_key():
     return Fernet.generate_key()
 
 
-def generate_private_public_key_pair():
+def generate_rsa_private_public_key_pair():
     """
     :return: private_key, public_key
     """
@@ -138,9 +146,59 @@ def generate_private_public_key_pair():
     public_key = private_key.public_key()
 
     private_key_bytes = __dumps_prk(private_key)
-    public_key_bytes = __dumps_puk(public_key)
+    public_key_bytes = __dumps_rsa_puk(public_key)
 
     return private_key_bytes, public_key_bytes
+
+
+def get_price_number(price):
+    return float(price[:-len(config.CURRENCY)].strip())
+
+
+def get_price_bytes(price):
+    if int(price) == price:
+        return bytes(str(int(price)), encoding='utf-8') + config.CURRENCY
+    else:
+        return bytes(str(price), encoding='utf-8') + config.CURRENCY
+
+def generate_dsa_private_public_key_pair():
+    private_key = dsa.generate_private_key(
+        key_size=1024,
+        backend=default_backend()
+    )
+
+    public_key = private_key.public_key()
+    private_key_bytes = __dumps_prk(private_key)
+    public_key_bytes = __dumps_dsa_puk(public_key)
+
+    return private_key_bytes, public_key_bytes
+
+
+def dsa_sign(message_bytes, private_key_bytes):
+    private_key = __loads_prk(private_key_bytes)
+    signature = private_key.sign(
+        message_bytes,
+        hashes.SHA256()
+    ).hex().encode('utf-8')
+
+    return SEP.join([message_bytes, signature])
+
+
+def dsa_verify(signed_message_bytes, public_key_bytes):
+    public_key = __loads_puk(public_key_bytes)
+    parts = signed_message_bytes.split(SEP)
+    signature = bytes.fromhex(parts[-1].decode('utf-8'))
+    message = SEP.join(parts[:-1])
+
+    try:
+        public_key.verify(
+            signature,
+            message,
+            hashes.SHA256()
+        )
+        return message, True
+    except InvalidSignature:
+        return None, False
 
 
 def encrypt_sym(message_bytes, key_bytes):
@@ -287,10 +345,17 @@ def __dumps_prk(private_key):
     )
 
 
-def __dumps_puk(public_key):
+def __dumps_rsa_puk(public_key):
     return public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.PKCS1
+    )
+
+
+def __dumps_dsa_puk(public_key):
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
 
 

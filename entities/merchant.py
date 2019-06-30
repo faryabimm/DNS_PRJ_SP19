@@ -15,6 +15,8 @@ class Merchant(Principal):
     def __init__(self, identifier):
         super().__init__(identifier)
         self.epoid_serial_key_map = {}
+        self.tickets = {}
+        self.epoid_serial_transaction_id_map = {}
 
 
 # ####################### ENTITY ELEMENTS  ####################### #
@@ -31,29 +33,16 @@ def run_server(address):
 
 # ####################### SERVICE METHODS  ####################### #
 
-
-def price_quote(self):
-    pass
-
-
-def goods_deliver(self):
-    pass
-
-
-def transaction_request(self):
-    pass
-
-
-def forward_receipt(self):
-    pass
-
-
 def register_on_transactor():
     transactor_id, transactor_public_key = data.get_transactor_contact()
     message = SEP.join([data.identifier, data.public_key, transactor_id])
     message_encrypted = cryptography.two_layer_sym_asym_encode(message, transactor_public_key)
-    messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[config.TRANSACTOR_ID], static.REGISTER_MERCHANT,
-                                                message_encrypted)
+    response = messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[config.TRANSACTOR_ID],
+                                                           static.REGISTER_MERCHANT,
+                                                           message_encrypted)
+    response_plain = cryptography.two_layer_sym_asym_decode(response, data.private_key)
+    account_number, nonce = response_plain.split(SEP)
+    data.account = (account_number, nonce)
 
 
 @app.route(slash(static.GET_CONTACT_INFO), methods=['POST'])
@@ -107,7 +96,7 @@ def request_price():
     logger.log_access(request)
     message = messaging.get_request_data(request)
     ticket, price_request_enc = message.split(SEP)
-    sym_key, client_identity, _, _, _ = cryptography.open_merchant_ticket(ticket, data.private_key)
+    sym_key, client_identity, _, _, _ = cryptography.open_ticket(ticket, data.private_key)
 
     # todo check client address, start, end timestamp of ticket
 
@@ -152,7 +141,7 @@ def request_goods():
     logger.log_access(request)
     message = messaging.get_request_data(request)
     ticket, goods_request_enc = message.split(SEP)
-    sym_key, _, _, _, _ = cryptography.open_merchant_ticket(ticket, data.private_key)
+    sym_key, _, _, _, _ = cryptography.open_ticket(ticket, data.private_key)
 
     # todo check client address, start, end timestamp of ticket
 
@@ -178,6 +167,7 @@ def request_goods():
     epoid_serial_number = cryptography.generate_epoid_serial_number()
 
     data.epoid_serial_key_map[epoid_serial_number] = goods_delivery_key
+    data.epoid_serial_transaction_id_map[epoid_serial_number] = transaction_id
 
     merchant_id = data.identifier
 
@@ -212,6 +202,170 @@ def __get_product_id_from_product_request_data(product_request_data):
 def __get_product(product_id):
     # implement logic to load the resource and return it. this is just a stub.
     return product_id
+
+
+@app.route(slash(static.SUBMIT_SIGNED_EPO), methods=['POST'])
+def submit_signed_epo():
+    logger.log_access(request)
+    message = messaging.get_request_data(request)
+    ticket, signed_epo_enc = message.split(SEP)
+    client_sym_key, _, _, _, _ = cryptography.open_ticket(ticket, data.private_key)
+
+    # todo check client address, start, end timestamp of ticket
+
+    signed_epo = cryptography.decrypt_sym(signed_epo_enc, client_sym_key)
+    epo = cryptography.strip_clear_signed_message(signed_epo)
+    parts = epo.split(SEP)
+
+    client_identity = parts[0]
+    product_id = parts[1]
+    price_to_pay = parts[2]
+    merchant_id = parts[3]
+    enc_product_checksum = parts[4]
+    product_request_data_checksum = parts[5]
+    account_data_checksum = parts[6]
+    epoid_plain = SEP.join(parts[7:10])
+    client_transactor_ticket = parts[10]
+    order_for_transactor = parts[11]
+
+    epoid_merchant_id, epoid_timestamp, epoid_serial_number = epoid_plain.split(SEP)
+    # todo check timestamp
+
+    warn_message = None
+    if epoid_merchant_id != data.identifier or merchant_id != data.identifier:
+        warn_message = '`merchant_id` mismatch'
+    elif epoid_serial_number not in data.epoid_serial_key_map:
+        warn_message = 'invalid `epo_id_serial_number`'
+
+    if warn_message is not None:
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    product_key = data.epoid_serial_key_map[epoid_serial_number]
+    transaction_id = data.epoid_serial_transaction_id_map[epoid_serial_number]
+    transaction_context = data.transaction_context[transaction_id]
+
+    warn_message = None
+    if transaction_context['peer_id'] != client_identity:
+        warn_message = '`client_id` mismatch'
+    if cryptography.cryptographic_checksum(
+            transaction_context['product_request_data']) != product_request_data_checksum:
+        warn_message = 'corrupted `product_request_data`'
+    if transaction_context['product_id'] != product_id:
+        warn_message = '`product_id` mismatch'
+
+    if warn_message is not None:
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    transactor_ticket, transactor_sym_key = get_ticket_key_id(config.TRANSACTOR_ID)
+
+    merchant_memo = b''  # todo check correctness
+
+    endorsed_signed_epo_plain = SEP.join([
+        signed_epo,
+        data.account[0],
+        merchant_memo,
+        product_key
+    ])
+
+    endorsed_signed_epo_plain_signed = cryptography.clear_sign(endorsed_signed_epo_plain, data.private_key)
+
+    endorsed_signed_epo_plain_signed_encrypted = cryptography.encrypt_sym(endorsed_signed_epo_plain_signed,
+                                                                          transactor_sym_key)
+
+    message_to_transactor = SEP.join([transactor_ticket, endorsed_signed_epo_plain_signed_encrypted])
+
+    transactor_response = messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[config.TRANSACTOR_ID],
+                                                                      static.SUBMIT_ENDORSED_SIGNED_EPO,
+                                                                      message_to_transactor)
+
+    transactor_response_plain = cryptography.decrypt_sym(transactor_response, transactor_sym_key)
+
+    parts = transactor_response_plain.split(SEP)
+
+    client_receipt = parts[-1]
+    transaction_receipt_dsa_signed = SEP.join(parts[:-1])
+
+    transaction_receipt, verified = cryptography.dsa_verify(transaction_receipt_dsa_signed,
+                                                            data.transactor_dsa_public_key)
+
+    if not verified:
+        warn_message = 'transaction receipt not verified'
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    parts = transaction_receipt.split(SEP)
+
+    receipt_result = parts[0]
+    receipt_client_identity = parts[1]
+    receipt_price = parts[2]
+    receipt_product_id = parts[3]
+    receipt_merchant_id = parts[4]
+    receipt_product_key = parts[5]
+    receipt_epoid = SEP.join(parts[6:])
+
+    warn_message = None
+    if receipt_client_identity != client_identity:
+        warn_message = '`client_id` mismatch'
+    elif receipt_price != transaction_context['bid']:
+        warn_message = 'paid `price` mismatch'
+    elif receipt_product_id != product_id:
+        warn_message = '`product_id` mismatch'
+    elif receipt_merchant_id != merchant_id or receipt_merchant_id != data.identifier:
+        warn_message = '`merchant_id` mismatch'
+    elif receipt_product_key != product_key:
+        warn_message = '`product_key` mismatch'
+    elif receipt_epoid != epoid_plain:
+        warn_message = '`epoid` mismatch'
+
+    if warn_message is not None:
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    return cryptography.encrypt_sym(transactor_response_plain, client_sym_key), 200
+
+
+def get_arbitrary_ticket(merchant_id):
+    for record in data.tickets:
+        if record == merchant_id:
+            return data.tickets[record]
+    return None, None
+
+
+def get_ticket_key_id(server_id):
+    ticket, access_symmetric_key = get_arbitrary_ticket(server_id)
+
+    if ticket is not None:
+        return ticket, access_symmetric_key
+
+    symmetric_key, ticket_request = __create_identity_ticket_request(server_id)
+
+    response_enc = messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[server_id], static.CREATE_TICKET,
+                                                               ticket_request)
+
+    response = cryptography.decrypt_sym(response_enc, symmetric_key)
+    ticket, access_symmetric_key = response.split(SEP)
+
+    data.tickets[server_id] = (ticket, access_symmetric_key)
+
+    return ticket, access_symmetric_key
+
+
+def __create_identity_ticket_request(merchant_id):
+    if merchant_id not in data.public_keychain:
+        logger.log_warn('merchant id', merchant_id, 'not found.')
+        return
+
+    identity = data.identifier
+    timestamp = cryptography.get_timestamp()
+    symmetric_key = cryptography.generate_symmetric_key()
+
+    message_to_encrypt = SEP.join([identity, merchant_id, timestamp, symmetric_key])
+    message_encrypted = cryptography.two_layer_sym_asym_encode(message_to_encrypt, data.public_keychain[merchant_id])
+    message_encrypted_signed = cryptography.clear_sign(message_encrypted, data.private_key)
+
+    return symmetric_key, message_encrypted_signed
 
 
 def initialize():
