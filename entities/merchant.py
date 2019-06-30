@@ -14,6 +14,7 @@ BID_PRICE_RATIO_THRESHOLD = 0.8
 class Merchant(Principal):
     def __init__(self, identifier):
         super().__init__(identifier)
+        self.epoid_serial_key_map = {}
 
 
 # ####################### ENTITY ELEMENTS  ####################### #
@@ -169,13 +170,15 @@ def request_goods():
         return warn_message, 403
 
     goods_delivery_key = cryptography.generate_symmetric_key()
-    # fixme save key and EPO/product_id/transaction_id (?)
 
     product = __get_product(product_id=transaction_context['product_id'])
     product_enc = cryptography.encrypt_sym(product, goods_delivery_key)
     product_enc_checksum = cryptography.cryptographic_checksum(product_enc)
 
     epoid_serial_number = cryptography.generate_epoid_serial_number()
+
+    data.epoid_serial_key_map[epoid_serial_number] = goods_delivery_key
+
     merchant_id = data.identifier
 
     receipt_plain = SEP.join([product_enc_checksum, merchant_id, epoid_serial_number])
