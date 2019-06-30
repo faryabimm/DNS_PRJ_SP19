@@ -104,7 +104,7 @@ def request_price():
     logger.log_access(request)
     message = messaging.get_request_data(request)
     ticket, price_request_enc = message.split(SEP)
-    sym_key, _, _, _, _ = cryptography.open_merchant_ticket(ticket, data.private_key)
+    sym_key, client_identity, _, _, _ = cryptography.open_merchant_ticket(ticket, data.private_key)
 
     # todo check client address, start, end timstamp of ticket
 
@@ -138,6 +138,8 @@ def request_price():
 
     response_plain = SEP.join([product_id, price, request_flags, transaction_id])
     response = cryptography.encrypt_sym(response_plain, sym_key)
+
+    data.update_transaction_context(transaction_id, product_request_data, product_id, bid, price, client_identity)
 
     return response, 200
 

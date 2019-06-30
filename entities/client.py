@@ -37,7 +37,7 @@ def run_server(address):
 def get_arbitrary_merchant_ticket(merchant_id, psudonymous=False):
     for record in data.merchant_tickets:
         if record[0] == merchant_id and ((record[1] != data.identifier) == psudonymous):
-            return data.merchant_tickets[record][0], data.merchant_tickets[record][0], record[1]
+            return data.merchant_tickets[record][0], data.merchant_tickets[record][1], record[1]
 
     logger.log_info('ticket not found for merchant: `{}`, psudonymous: `{}`'.format(merchant_id, psudonymous))
     return None, None, None
@@ -47,7 +47,7 @@ def get_merchant_ticket(merchant_id, identity):
     for record in data.merchant_tickets:
         # (merchant_id, identity): (ticket, symmetric_key)
         if record[0] == merchant_id and record[1] == identity:
-            return data.merchant_tickets[record][0], data.merchant_tickets[record][0], record[1]
+            return data.merchant_tickets[record][0], data.merchant_tickets[record][1], record[1]
 
     logger.log_info('ticket not found for merchant: `{}`, identity: `{}`'.format(merchant_id, identity))
     return None, None, None
@@ -176,8 +176,24 @@ def get_ticket_key_id(merchant_id, psudonymous):
     return ticket, access_symmetric_key, identity
 
 
-def request_price(merchant_id, psudonymous, product_request_data, bid=None, credentials=None, transaction_id=None):
+def request_price(merchant_id, psudonymous, product_request_data=None, bid=None, credentials=None, transaction_id=None):
     ticket, sym_key, identity = get_ticket_key_id(merchant_id, psudonymous)
+
+    if transaction_id is not None and transaction_id not in data.transaction_context:
+        logger.log_warn('must not provide `transaction_id` in initial transaction interaction')
+        return
+
+    if transaction_id is None and product_request_data is None:
+        logger.log_warn('must provide `product_request_data` in initial transaction interaction')
+        return
+
+    if transaction_id is not None and product_request_data is not None and \
+            data.transaction_context[transaction_id]['product_request_data'] != product_request_data:
+        logger.log_warn('cannot change `product_request_data` after initial transaction interaction')
+        return
+
+    if transaction_id is not None:
+        product_request_data = data.transaction_context[transaction_id]['product_request_data']
 
     # todo group membership
     if credentials is None:
@@ -201,7 +217,9 @@ def request_price(merchant_id, psudonymous, product_request_data, bid=None, cred
     if transaction_id != response_transaction_id:
         logger.log_warn('transaction id mismatch')
 
-    return product_id, price
+    data.update_transaction_context(transaction_id, product_request_data, product_id, bid, price, merchant_id)
+
+    return product_id, price, transaction_id
 
 
 def main():
@@ -211,7 +229,9 @@ def main():
     # get_ticket_key_id(config.MERCHANT_ID, psudonymous=False)
     # get_ticket_key_id(config.MERCHANT_ID, psudonymous=True)
 
-    x = request_price(config.MERCHANT_ID, False, b'sneakers')
+    x, y, z = request_price(config.MERCHANT_ID, False, product_request_data=b'sneakers')
+    x, y, z = request_price(config.MERCHANT_ID, False, transaction_id=z)
+
 
     pass
 
