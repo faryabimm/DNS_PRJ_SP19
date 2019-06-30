@@ -3,6 +3,7 @@ CREATE_PSUDONYM = 'create_psudonym'
 CREATE_TICKET = 'create_ticket'
 REGISTER_CLIENT = 'register_client'
 REGISTER_MERCHANT = 'register_merchant'
+REQUEST_PRICE = 'request_price'
 
 
 def slash_contain(input_string):

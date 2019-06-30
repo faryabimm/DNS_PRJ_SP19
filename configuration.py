@@ -1,5 +1,6 @@
 NONCE_LENGTH = 20
 IDENTIFIER_LENGTH = 5
+TRANSACTION_ID_LENGTH = 10
 TICKET_LIFE_TIME_MINUTES = 20
 MESSAGE_SEPARATOR = b'$'
 TRANSACTOR_ID = b'transactor'
@@ -8,4 +9,10 @@ MERCHANT_ID = b'merchant'
 ADDRESS_BOOK = {
     TRANSACTOR_ID: 'localhost:9876',
     MERCHANT_ID: 'localhost:9877'
+}
+
+PRODUCT_SHELF = {
+    MERCHANT_ID: {
+        b'sneakers': b'70USD'
+    }
 }

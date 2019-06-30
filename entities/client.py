@@ -153,7 +153,7 @@ def __create_identity_ticket_request(merchant_id):
     return symmetric_key, message_encrypted_signed
 
 
-def get_ticket_and_key(merchant_id, psudonymous):
+def get_ticket_key_id(merchant_id, psudonymous):
     ticket, access_symmetric_key, identity = get_arbitrary_merchant_ticket(merchant_id, psudonymous)
 
     if ticket is not None:
@@ -176,12 +176,43 @@ def get_ticket_and_key(merchant_id, psudonymous):
     return ticket, access_symmetric_key, identity
 
 
+def request_price(merchant_id, psudonymous, product_request_data, bid=None, credentials=None, transaction_id=None):
+    ticket, sym_key, identity = get_ticket_key_id(merchant_id, psudonymous)
+
+    # todo group membership
+    if credentials is None:
+        credentials = b''
+    request_flags = b''
+    if bid is None:
+        bid = b''
+
+    if transaction_id is None:
+        transaction_id = cryptography.generate_random_transaction_id()
+
+    price_request_plain = SEP.join([credentials, product_request_data, bid, request_flags, transaction_id])
+    price_request_enc = cryptography.encrypt_sym(price_request_plain, sym_key)
+    message = SEP.join([ticket, price_request_enc])
+
+    response = messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[merchant_id], static.REQUEST_PRICE,
+                                                           message)
+    response_plain = cryptography.decrypt_sym(response, sym_key)
+    product_id, price, _, response_transaction_id = response_plain.split(SEP)
+
+    if transaction_id != response_transaction_id:
+        logger.log_warn('transaction id mismatch')
+
+    return product_id, price
+
+
 def main():
     data.get_transactor_contact()
     register_on_transactor()
     data.get_server_contact_info(config.MERCHANT_ID)
-    get_ticket_and_key(config.MERCHANT_ID, psudonymous=False)
-    get_ticket_and_key(config.MERCHANT_ID, psudonymous=True)
+    # get_ticket_key_id(config.MERCHANT_ID, psudonymous=False)
+    # get_ticket_key_id(config.MERCHANT_ID, psudonymous=True)
+
+    x = request_price(config.MERCHANT_ID, False, b'sneakers')
+
     pass
 
 

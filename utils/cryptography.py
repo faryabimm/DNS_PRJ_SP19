@@ -47,6 +47,18 @@ def strip_clear_signed_message(clear_signed_message_bytes):
     return SEP.join(parts[:-3])
 
 
+def open_merchant_ticket(ticket_bytes, merchant_private_key):
+    ticket = decrypt_asym(ticket_bytes, merchant_private_key)
+    """
+    client_access_symmetric_key,
+    client_identity,
+    client_address,
+    ticket_start_timestamp,
+    ticket_end_timestamp
+    """
+    return ticket.split(SEP)
+
+
 def verify_clear_signature(clear_signed_message_bytes, public_key_bytes):
     parts = clear_signed_message_bytes.split(SEP)
     message_bytes = SEP.join(parts[:-3])
@@ -64,6 +76,10 @@ def verify_clear_signature(clear_signed_message_bytes, public_key_bytes):
 
 def generate_random_identity():
     return generate_random_bytes(config.IDENTIFIER_LENGTH)
+
+
+def generate_random_transaction_id():
+    return generate_random_bytes(config.TRANSACTION_ID_LENGTH)
 
 
 def generate_random_bytes(length):

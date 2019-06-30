@@ -99,6 +99,57 @@ def create_ticket():
     return response, 200
 
 
+@app.route(slash(static.REQUEST_PRICE), methods=['POST'])
+def request_price():
+    logger.log_access(request)
+    message = messaging.get_request_data(request)
+    ticket, price_request_enc = message.split(SEP)
+    sym_key, _, _, _, _ = cryptography.open_merchant_ticket(ticket, data.private_key)
+
+    # todo check client address, start, end timstamp of ticket
+
+    price_request = cryptography.decrypt_sym(price_request_enc, sym_key)
+
+    parts = price_request.split(SEP)
+
+    transaction_id = parts[-1]
+    bid = parts[-3]
+    product_request_data = parts[-4]
+    credentials = parts[:-4]
+
+    if credentials == b'':
+        credentials = None
+    if transaction_id == b'':
+        transaction_id = cryptography.generate_random_transaction_id()
+    if bid == b'':
+        bid = None
+    # todo check credentials if present
+
+    product_id = get_product_id_from_product_request_data(product_request_data)
+
+    if product_id not in config.PRODUCT_SHELF[data.identifier]:
+        warn_message = 'product `{}` is not present in shelf for merchant `{}`'.format(product_id, data.identifier)
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    price = config.PRODUCT_SHELF[data.identifier][product_id]
+
+    request_flags = b''
+
+    response_plain = SEP.join([product_id, price, request_flags, transaction_id])
+    response = cryptography.encrypt_sym(response_plain, sym_key)
+
+    return response, 200
+
+
+def get_product_id_from_product_request_data(product_request_data):
+    # can implement complex NLP logic here.
+    return product_request_data
+
+
+
+
+
 def initialize():
     data.get_transactor_contact()
     register_on_transactor()
