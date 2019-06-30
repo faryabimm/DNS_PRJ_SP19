@@ -8,6 +8,8 @@ from static import slash_contain as slash
 # #######################    DATA MODEL    ####################### #
 from utils import messaging, cryptography, logger
 
+BID_PRICE_RATIO_THRESHOLD = 0.8
+
 
 class Merchant(Principal):
     def __init__(self, identifier):
@@ -106,7 +108,7 @@ def request_price():
     ticket, price_request_enc = message.split(SEP)
     sym_key, client_identity, _, _, _ = cryptography.open_merchant_ticket(ticket, data.private_key)
 
-    # todo check client address, start, end timstamp of ticket
+    # todo check client address, start, end timestamp of ticket
 
     price_request = cryptography.decrypt_sym(price_request_enc, sym_key)
 
@@ -125,14 +127,14 @@ def request_price():
         bid = None
     # todo check credentials if present
 
-    product_id = get_product_id_from_product_request_data(product_request_data)
+    product_id = __get_product_id_from_product_request_data(product_request_data)
 
     if product_id not in config.PRODUCT_SHELF[data.identifier]:
         warn_message = 'product `{}` is not present in shelf for merchant `{}`'.format(product_id, data.identifier)
         logger.log_warn(warn_message)
         return warn_message, 403
 
-    price = config.PRODUCT_SHELF[data.identifier][product_id]
+    price = config.PRODUCT_SHELF[data.identifier][product_id] + config.CURRENCY
 
     request_flags = b''
 
@@ -144,12 +146,69 @@ def request_price():
     return response, 200
 
 
-def get_product_id_from_product_request_data(product_request_data):
+@app.route(slash(static.REQUEST_GOODS), methods=['POST'])
+def request_goods():
+    logger.log_access(request)
+    message = messaging.get_request_data(request)
+    ticket, goods_request_enc = message.split(SEP)
+    sym_key, _, _, _, _ = cryptography.open_merchant_ticket(ticket, data.private_key)
+
+    # todo check client address, start, end timestamp of ticket
+
+    transaction_id = cryptography.decrypt_sym(goods_request_enc, sym_key)
+    transaction_context = data.transaction_context[transaction_id]
+
+    warn_message = None
+    if transaction_id not in data.transaction_context:
+        warn_message = 'invalid `transaction_id`'
+    elif not should_proceed_transaction(transaction_context):
+        warn_message = 'transaction not accepted by merchant'
+
+    if warn_message is not None:
+        logger.log_warn(warn_message)
+        return warn_message, 403
+
+    goods_delivery_key = cryptography.generate_symmetric_key()
+    # fixme save key and EPO/product_id/transaction_id (?)
+
+    product = __get_product(product_id=transaction_context['product_id'])
+    product_enc = cryptography.encrypt_sym(product, goods_delivery_key)
+    product_enc_checksum = cryptography.cryptographic_checksum(product_enc)
+
+    epoid_serial_number = cryptography.generate_epoid_serial_number()
+    merchant_id = data.identifier
+
+    receipt_plain = SEP.join([product_enc_checksum, merchant_id, epoid_serial_number])
+    receipt_enc = cryptography.encrypt_sym(receipt_plain, sym_key)
+
+    response = SEP.join([product_enc, receipt_enc])
+    return response, 200
+
+
+def should_proceed_transaction(transaction_context):
+    if transaction_context['bid'] is None:
+        logger.log_warn('there is no `bid` set for transaction')
+        return False
+
+    bid_value = float(transaction_context['bid'][:-len(config.CURRENCY)])
+    price_value = float(transaction_context['price'][:-len(config.CURRENCY)])
+
+    # custom, complex logic can be implemented here
+
+    if bid_value / price_value >= BID_PRICE_RATIO_THRESHOLD:
+        return True
+
+    return False
+
+
+def __get_product_id_from_product_request_data(product_request_data):
     # can implement complex NLP logic here.
     return product_request_data
 
 
-
+def __get_product(product_id):
+    # implement logic to load the resource and return it. this is just a stub.
+    return product_id
 
 
 def initialize():

@@ -177,7 +177,7 @@ def get_ticket_key_id(merchant_id, psudonymous):
 
 
 def request_price(merchant_id, psudonymous, product_request_data=None, bid=None, credentials=None, transaction_id=None):
-    ticket, sym_key, identity = get_ticket_key_id(merchant_id, psudonymous)
+    ticket, sym_key, _ = get_ticket_key_id(merchant_id, psudonymous)
 
     if transaction_id is not None and transaction_id not in data.transaction_context:
         logger.log_warn('must not provide `transaction_id` in initial transaction interaction')
@@ -192,20 +192,36 @@ def request_price(merchant_id, psudonymous, product_request_data=None, bid=None,
         logger.log_warn('cannot change `product_request_data` after initial transaction interaction')
         return
 
+    if bid is not None and not bid.endswith(config.CURRENCY):
+        logger.log_warn('bid should end with currency postfix `{}`'.format(config.CURRENCY))
+        return
+
+    if bid is not None and not cryptography.is_number_valued_bytes(bid[:-len(config.CURRENCY)].strip()):
+        logger.log_warn('bid should have a proper numeric form')
+        return
+
+    if bid is not None:
+        num_part = bid[:-len(config.CURRENCY)].strip()
+        if float(num_part) == int(float(num_part)):
+            bid = bytes(str(int(num_part)), encoding='utf-8') + config.CURRENCY
+        else:
+            bid = bytes(str(float(num_part)), encoding='utf-8') + config.CURRENCY
+
     if transaction_id is not None:
         product_request_data = data.transaction_context[transaction_id]['product_request_data']
-
     # todo group membership
     if credentials is None:
         credentials = b''
     request_flags = b''
     if bid is None:
-        bid = b''
+        message_body_bid = b''
+    else:
+        message_body_bid = bid
 
     if transaction_id is None:
         transaction_id = cryptography.generate_random_transaction_id()
 
-    price_request_plain = SEP.join([credentials, product_request_data, bid, request_flags, transaction_id])
+    price_request_plain = SEP.join([credentials, product_request_data, message_body_bid, request_flags, transaction_id])
     price_request_enc = cryptography.encrypt_sym(price_request_plain, sym_key)
     message = SEP.join([ticket, price_request_enc])
 
@@ -215,11 +231,41 @@ def request_price(merchant_id, psudonymous, product_request_data=None, bid=None,
     product_id, price, _, response_transaction_id = response_plain.split(SEP)
 
     if transaction_id != response_transaction_id:
-        logger.log_warn('transaction id mismatch')
+        logger.log_warn('`transaction_id` mismatch')
 
     data.update_transaction_context(transaction_id, product_request_data, product_id, bid, price, merchant_id)
 
     return product_id, price, transaction_id
+
+
+def request_goods(merchant_id, psudonymous, transaction_id):
+    if transaction_id not in data.transaction_context:
+        logger.log_warn('`transaction_id` not found')
+
+    ticket, sym_key, _ = get_ticket_key_id(merchant_id, psudonymous)
+
+    goods_request_enc = cryptography.encrypt_sym(transaction_id, sym_key)
+    message = SEP.join([ticket, goods_request_enc])
+
+    response = messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[merchant_id], static.REQUEST_GOODS,
+                                                           message)
+    enc_product, enc_receipt = response.split(SEP)
+
+    receipt = cryptography.decrypt_sym(enc_receipt, sym_key)
+    enc_product_checksum, receipt_merchant_id, epoid_serial_number = receipt.split(SEP)
+
+    if merchant_id != receipt_merchant_id:
+        logger.log_warn('`merchant_id` mismatch')
+        return
+
+    if enc_product_checksum != cryptography.cryptographic_checksum(enc_product):
+        logger.log_warn('encrypted product checksum mismatch.')
+        return
+
+    timestamp = cryptography.get_timestamp()
+    epoid_plain = SEP.join([merchant_id, timestamp, epoid_serial_number])
+
+    return enc_product, epoid_plain
 
 
 def main():
@@ -229,9 +275,9 @@ def main():
     # get_ticket_key_id(config.MERCHANT_ID, psudonymous=False)
     # get_ticket_key_id(config.MERCHANT_ID, psudonymous=True)
 
-    x, y, z = request_price(config.MERCHANT_ID, False, product_request_data=b'sneakers')
-    x, y, z = request_price(config.MERCHANT_ID, False, transaction_id=z)
-
+    product_id, price, transaction_id = request_price(config.MERCHANT_ID, False, product_request_data=b'sneakers',
+                                                      bid=b'67.5USD')
+    enc_goods, epoid_plain = request_goods(config.MERCHANT_ID, False, transaction_id=transaction_id)
 
     pass
 

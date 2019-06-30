@@ -4,6 +4,7 @@ CREATE_TICKET = 'create_ticket'
 REGISTER_CLIENT = 'register_client'
 REGISTER_MERCHANT = 'register_merchant'
 REQUEST_PRICE = 'request_price'
+REQUEST_GOODS = 'request_goods'
 
 
 def slash_contain(input_string):

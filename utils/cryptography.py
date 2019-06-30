@@ -86,6 +86,10 @@ def generate_random_bytes(length):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length)).encode('utf-8')
 
 
+def generate_epoid_serial_number():
+    return ''.join(random.choices(string.digits, k=config.EPOID_SERIAL_NUMBER_LENGTH)).encode('utf-8')
+
+
 def generate_nonce():
     return generate_random_bytes(length=config.NONCE_LENGTH)
 
@@ -111,7 +115,7 @@ def hash_(byte_message):
     """
     :return hash_value: bytes array
     """
-    return hash_algorithm(byte_message).digest
+    return hash_algorithm(byte_message).hexdigest().encode('utf-8')
 
 
 def generate_symmetric_key():
@@ -147,6 +151,13 @@ def encrypt_sym(message_bytes, key_bytes):
     """
     fernet = Fernet(key_bytes)
     return fernet.encrypt(message_bytes)
+
+
+def is_number_valued_bytes(input_bytes):
+    for b in input_bytes:
+        if not (ord(b'0') <= b <= ord(b'9') or b == ord(b'.')):
+            return False
+    return True
 
 
 def decrypt_sym(enc_message_bytes, key_bytes):
