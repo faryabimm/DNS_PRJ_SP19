@@ -13,8 +13,6 @@ class Principal:
         self.account = (None, None)
         self.transactor_dsa_public_key = None
 
-    # TODO dump and load keychain methods in utils.cryptography
-
     def update_transaction_context(self, transaction_id, product_request_data, product_id, bid, price, peer_id):
         if transaction_id not in self.transaction_context:
             logger.log_info('added context for transaction `{}`'.format(transaction_id))

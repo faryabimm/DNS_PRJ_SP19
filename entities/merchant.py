@@ -6,9 +6,10 @@ from configuration import MESSAGE_SEPARATOR as SEP
 from entities.principal import Principal
 from static import slash_contain as slash
 # #######################    DATA MODEL    ####################### #
-from utils import messaging, cryptography, logger
+from utils import messaging, cryptography, logger, generator
 
 BID_PRICE_RATIO_THRESHOLD = 0.8
+DISCOUNTED_PRICE_RATIO = 0.8
 
 
 class Merchant(Principal):
@@ -17,6 +18,7 @@ class Merchant(Principal):
         self.epoid_serial_key_map = {}
         self.tickets = {}
         self.epoid_serial_transaction_id_map = {}
+        self.trusted_groups = [config.GROUP_ID]
 
 
 # ####################### ENTITY ELEMENTS  ####################### #
@@ -36,11 +38,11 @@ def run_server(address):
 def register_on_transactor():
     transactor_id, transactor_public_key = data.get_transactor_contact()
     message = SEP.join([data.identifier, data.public_key, transactor_id])
-    message_encrypted = cryptography.two_layer_sym_asym_encode(message, transactor_public_key)
+    message_encrypted = cryptography.two_layer_sym_asym_encrypt(message, transactor_public_key)
     response = messaging.transmit_message_and_get_response(config.ADDRESS_BOOK[config.TRANSACTOR_ID],
                                                            static.REGISTER_MERCHANT,
                                                            message_encrypted)
-    response_plain = cryptography.two_layer_sym_asym_decode(response, data.private_key)
+    response_plain = cryptography.two_layer_sym_asym_decrypt(response, data.private_key)
     account_number, nonce = response_plain.split(SEP)
     data.account = (account_number, nonce)
 
@@ -57,7 +59,7 @@ def create_ticket():
     logger.log_access(request)
     message = messaging.get_request_data(request)
     encrypted_data = cryptography.strip_clear_signed_message(message)
-    decrypted_data = cryptography.two_layer_sym_asym_decode(encrypted_data, data.private_key)
+    decrypted_data = cryptography.two_layer_sym_asym_decrypt(encrypted_data, data.private_key)
 
     client_identity, merchant_id, timestamp, symmetric_key = decrypted_data.split(SEP)
 
@@ -66,11 +68,9 @@ def create_ticket():
         logger.log_warn(warn_message)
         return warn_message, 403
 
-    # todo check timestamp
-
     client_access_symmetric_key = cryptography.generate_symmetric_key()
     client_address = request.remote_addr.encode('utf-8')
-    ticket_start_timestamp, ticket_end_timestamp = cryptography.get_ticket_life_span()
+    ticket_start_timestamp, ticket_end_timestamp = generator.get_ticket_life_span()
     ticket_unencrypted = SEP.join([
         client_access_symmetric_key,
         client_identity,
@@ -91,14 +91,22 @@ def create_ticket():
     return response, 200
 
 
+def __calculate_discounted_price(group_id, detail, credentials_client_identity, account_checksum, product_id):
+    # implement custom discount logic
+    real_price = config.PRODUCT_SHELF[data.identifier][product_id] + config.CURRENCY
+    real_price_num = generator.get_price_number(real_price)
+    discounted_price_num = real_price_num * DISCOUNTED_PRICE_RATIO
+    discounted_price = generator.get_price_bytes(discounted_price_num)
+
+    return discounted_price
+
+
 @app.route(slash(static.REQUEST_PRICE), methods=['POST'])
 def request_price():
     logger.log_access(request)
     message = messaging.get_request_data(request)
     ticket, price_request_enc = message.split(SEP)
     sym_key, client_identity, _, _, _ = cryptography.open_ticket(ticket, data.private_key)
-
-    # todo check client address, start, end timestamp of ticket
 
     price_request = cryptography.decrypt_sym(price_request_enc, sym_key)
 
@@ -107,15 +115,14 @@ def request_price():
     transaction_id = parts[-1]
     bid = parts[-3]
     product_request_data = parts[-4]
-    credentials = parts[:-4]
+    credentials = SEP.join(parts[:-4])
 
     if credentials == b'':
         credentials = None
     if transaction_id == b'':
-        transaction_id = cryptography.generate_random_transaction_id()
+        transaction_id = generator.generate_random_transaction_id()
     if bid == b'':
         bid = None
-    # todo check credentials if present
 
     product_id = __get_product_id_from_product_request_data(product_request_data)
 
@@ -124,7 +131,26 @@ def request_price():
         logger.log_warn(warn_message)
         return warn_message, 403
 
-    price = config.PRODUCT_SHELF[data.identifier][product_id] + config.CURRENCY
+    if credentials is not None:
+        credentials_message = cryptography.strip_clear_signed_message(credentials)
+        group_id, detail, credentials_client_identity, account_checksum, timestamp = credentials_message.split(SEP)
+
+        if group_id not in data.trusted_groups:
+            warn_message = 'unknown group'
+            logger.log_warn(warn_message)
+            return warn_message, 403
+
+        _, verified = cryptography.verify_clear_signature(credentials, data.public_keychain[group_id])
+
+        if not verified:
+            warn_message = 'group credentials not verified'
+            logger.log_warn(warn_message)
+            return warn_message, 403
+
+        price = __calculate_discounted_price(group_id, detail, credentials_client_identity, account_checksum,
+                                             product_id)
+    else:
+        price = config.PRODUCT_SHELF[data.identifier][product_id] + config.CURRENCY
 
     request_flags = b''
 
@@ -142,8 +168,6 @@ def request_goods():
     message = messaging.get_request_data(request)
     ticket, goods_request_enc = message.split(SEP)
     sym_key, _, _, _, _ = cryptography.open_ticket(ticket, data.private_key)
-
-    # todo check client address, start, end timestamp of ticket
 
     transaction_id = cryptography.decrypt_sym(goods_request_enc, sym_key)
     transaction_context = data.transaction_context[transaction_id]
@@ -164,7 +188,7 @@ def request_goods():
     product_enc = cryptography.encrypt_sym(product, goods_delivery_key)
     product_enc_checksum = cryptography.cryptographic_checksum(product_enc)
 
-    epoid_serial_number = cryptography.generate_epoid_serial_number()
+    epoid_serial_number = generator.generate_epoid_serial_number()
 
     data.epoid_serial_key_map[epoid_serial_number] = goods_delivery_key
     data.epoid_serial_transaction_id_map[epoid_serial_number] = transaction_id
@@ -211,8 +235,6 @@ def submit_signed_epo():
     ticket, signed_epo_enc = message.split(SEP)
     client_sym_key, _, _, _, _ = cryptography.open_ticket(ticket, data.private_key)
 
-    # todo check client address, start, end timestamp of ticket
-
     signed_epo = cryptography.decrypt_sym(signed_epo_enc, client_sym_key)
     epo = cryptography.strip_clear_signed_message(signed_epo)
     parts = epo.split(SEP)
@@ -229,7 +251,6 @@ def submit_signed_epo():
     order_for_transactor = parts[11]
 
     epoid_merchant_id, epoid_timestamp, epoid_serial_number = epoid_plain.split(SEP)
-    # todo check timestamp
 
     warn_message = None
     if epoid_merchant_id != data.identifier or merchant_id != data.identifier:
@@ -260,7 +281,7 @@ def submit_signed_epo():
 
     transactor_ticket, transactor_sym_key = get_ticket_key_id(config.TRANSACTOR_ID)
 
-    merchant_memo = b''  # todo check correctness
+    merchant_memo = b''
 
     endorsed_signed_epo_plain = SEP.join([
         signed_epo,
@@ -358,11 +379,11 @@ def __create_identity_ticket_request(merchant_id):
         return
 
     identity = data.identifier
-    timestamp = cryptography.get_timestamp()
+    timestamp = generator.get_timestamp()
     symmetric_key = cryptography.generate_symmetric_key()
 
     message_to_encrypt = SEP.join([identity, merchant_id, timestamp, symmetric_key])
-    message_encrypted = cryptography.two_layer_sym_asym_encode(message_to_encrypt, data.public_keychain[merchant_id])
+    message_encrypted = cryptography.two_layer_sym_asym_encrypt(message_to_encrypt, data.public_keychain[merchant_id])
     message_encrypted_signed = cryptography.clear_sign(message_encrypted, data.private_key)
 
     return symmetric_key, message_encrypted_signed
@@ -371,6 +392,8 @@ def __create_identity_ticket_request(merchant_id):
 def initialize():
     data.get_transactor_contact()
     register_on_transactor()
+    for group_id in data.trusted_groups:
+        data.get_server_contact_info(group_id)
 
 
 if __name__ == '__main__':

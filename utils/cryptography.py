@@ -1,8 +1,5 @@
 import base64
 import hashlib
-import random
-import string
-from datetime import datetime
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.fernet import Fernet
@@ -10,8 +7,8 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, dsa, padding
 
-import configuration as config
 from configuration import MESSAGE_SEPARATOR as SEP
+from utils import generator
 from utils import logger
 
 hash_algorithm = hashlib.sha1
@@ -24,18 +21,9 @@ def cryptographic_checksum(message_bytes):
     return hash_(message_bytes)
 
 
-def get_timestamp():
-    return bytes(str(int(datetime.now().timestamp() * 1e6)), encoding='utf-8')
-
-
-def get_ticket_life_span():
-    return get_timestamp(), bytes(str(int((datetime.now().timestamp() + config.TICKET_LIFE_TIME_MINUTES * 60) * 1e6)),
-                                  encoding='utf-8')
-
-
 def clear_sign(message_bytes, private_key_bytes):
-    nonce = generate_nonce()
-    timestamp = get_timestamp()
+    nonce = generator.generate_nonce()
+    timestamp = generator.get_timestamp()
     final_message_bytes = SEP.join([message_bytes, nonce, timestamp])
     signature = sign_message(final_message_bytes, private_key_bytes)
 
@@ -69,41 +57,11 @@ def verify_clear_signature(clear_signed_message_bytes, public_key_bytes):
     if not verified:
         logger.log_warn('clear signature verification failed.')
 
-        # TODO timestamp checking!
-
     return message_bytes, verified
 
 
-def generate_random_identity():
-    return generate_random_bytes(config.IDENTIFIER_LENGTH)
-
-
-def generate_random_transaction_id():
-    return generate_random_bytes(config.TRANSACTION_ID_LENGTH)
-
-
-def generate_random_bytes(length):
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length)).encode('utf-8')
-
-
-def generate_random_number_bytes(length):
-    return ''.join(random.choices(string.digits, k=length)).encode('utf-8')
-
-
-def generate_epoid_serial_number():
-    return generate_random_number_bytes(length=config.EPOID_SERIAL_NUMBER_LENGTH)
-
-
-def generate_random_account_number():
-    return generate_random_number_bytes(config.ACCOUNT_NUMBER_LENGTH)
-
-
-def generate_nonce():
-    return generate_random_bytes(length=config.NONCE_LENGTH)
-
-
-def two_layer_sym_asym_encode(message_bytes, public_key_bytes):
-    nonce = generate_nonce()
+def two_layer_sym_asym_encrypt(message_bytes, public_key_bytes):
+    nonce = generator.generate_nonce()
     symmetric_key = generate_symmetric_key()
     encrypted_message = encrypt_sym(message_bytes=SEP.join([message_bytes, nonce]), key_bytes=symmetric_key)
     encrypted_key = encrypt_asym(message_bytes=symmetric_key, puk_bytes=public_key_bytes)
@@ -111,7 +69,7 @@ def two_layer_sym_asym_encode(message_bytes, public_key_bytes):
     return SEP.join([encrypted_message, encrypted_key])
 
 
-def two_layer_sym_asym_decode(message_bytes, private_key_bytes):
+def two_layer_sym_asym_decrypt(message_bytes, private_key_bytes):
     enc_message_bytes, enc_key_bytes = message_bytes.split(SEP)
     symmetric_key = decrypt_asym(enc_key_bytes, private_key_bytes)
     plain_bytes = decrypt_sym(enc_message_bytes, symmetric_key)
@@ -150,16 +108,6 @@ def generate_rsa_private_public_key_pair():
 
     return private_key_bytes, public_key_bytes
 
-
-def get_price_number(price):
-    return float(price[:-len(config.CURRENCY)].strip())
-
-
-def get_price_bytes(price):
-    if int(price) == price:
-        return bytes(str(int(price)), encoding='utf-8') + config.CURRENCY
-    else:
-        return bytes(str(price), encoding='utf-8') + config.CURRENCY
 
 def generate_dsa_private_public_key_pair():
     private_key = dsa.generate_private_key(
@@ -209,13 +157,6 @@ def encrypt_sym(message_bytes, key_bytes):
     """
     fernet = Fernet(key_bytes)
     return fernet.encrypt(message_bytes)
-
-
-def is_number_valued_bytes(input_bytes):
-    for b in input_bytes:
-        if not (ord(b'0') <= b <= ord(b'9') or b == ord(b'.')):
-            return False
-    return True
 
 
 def decrypt_sym(enc_message_bytes, key_bytes):

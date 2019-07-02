@@ -10,10 +10,12 @@ MESSAGE_SEPARATOR = b'$'
 
 TRANSACTOR_ID = b'transactor'
 MERCHANT_ID = b'merchant'
+GROUP_ID = b'group'
 
 ADDRESS_BOOK = {
     TRANSACTOR_ID: 'localhost:9876',
-    MERCHANT_ID: 'localhost:9877'
+    MERCHANT_ID: 'localhost:9877',
+    GROUP_ID: 'localhost:9878'
 }
 
 CURRENCY = b'USD'
